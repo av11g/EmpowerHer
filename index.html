@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>EmpowerHer - Crime Heatmap</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        /* Full page layout */
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+        }
+        
+        #map {
+            height: 100%;
+            width: 100%;
+            position: absolute;
+        }
+        
+        /* Control panel */
+        .control-panel {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 6px rgba(0,0,0,.3);
+            z-index: 1;
+            max-width: 300px;
+        }
+        
+        h2 {
+            margin-top: 0;
+            color: #3c4043;
+        }
+        
+        .control-group {
+            margin-bottom: 15px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        
+        button {
+            background-color: #4285f4;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-top: 10px;
+        }
+        
+        button:hover {
+            background-color: #3367d6;
+        }
+        
+        input[type="range"] {
+            width: 100%;
+        }
+        
+        select {
+            width: 100%;
+            padding: 5px;
+            margin-bottom: 10px;
+        }
+        
+        #status-message {
+            margin-top: 10px;
+            font-style: italic;
+            color: #5f6368;
+        }
+    </style>
+</head>
+<body>
+    <!-- Map container -->
+    <div id="map"></div>
+    
+    <!-- Control panel -->
+    <div class="control-panel">
+        <h2>EmpowerHer Crime Map</h2>
+        
+        <div class="control-group">
+            <label for="time-filter">Time Range:</label>
+            <select id="time-filter">
+                <option value="6">Last 6 hours</option>
+                <option value="12">Last 12 hours</option>
+                <option value="24" selected>Last 24 hours</option>
+                <option value="48">Last 48 hours</option>
+                <option value="168">Last week</option>
+                <option value="720">Last month</option>
+                <option value="0">All time</option>
+            </select>
+        </div>
+        
+        <div class="control-group">
+            <label for="radius">Heatmap Radius: <span id="radius-value">20</span></label>
+            <input type="range" id="radius" min="10" max="50" value="20" oninput="updateRadiusValue(this.value)">
+        </div>
+        
+        <div class="control-group">
+            <label for="opacity">Opacity: <span id="opacity-value">0.7</span></label>
+            <input type="range" id="opacity" min="1" max="10" value="7" oninput="updateOpacityValue(this.value)">
+        </div>
+        
+        <button id="apply-filters">Apply Filters</button>
+        <button id="refresh-data">Refresh Data</button>
+        <div id="status-message">Loading crime data...</div>
+    </div>
+    
+    <!-- Firebase -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+    
+    <!-- Google Maps with visualization library -->
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDGVg62dsidCJ9p5UsbjiNOu2pharMyGRE&libraries=visualization"></script>
+    
+    <script>
+        // Firebase configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyAomjSB1dyXeQztq7hKKK0zIWt1XF1CKWI",
+            projectId: "empowerher-285ec",
+        };
+        
+        // Initialize Firebase
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+        
+        // Global variables
+        let map;
+        let heatmap;
+        let heatmapData = [];
+        let timeFilterHours = 24; // Default to 24 hours
+        
+        // Update the displayed value for radius slider
+        function updateRadiusValue(value) {
+            document.getElementById('radius-value').textContent = value;
+        }
+        
+        // Update the displayed value for opacity slider
+        function updateOpacityValue(value) {
+            document.getElementById('opacity-value').textContent = (value / 10).toFixed(1);
+        }
+        
+        // Initialize Google Map
+        function initMap() {
+            // Create a new map centered at your location
+            map = new google.maps.Map(document.getElementById("map"), {
+                zoom: 12,
+                center: { lat: 28.5956, lng: 77.1673 },
+                mapTypeId: google.maps.MapTypeId.ROADMAP,
+                mapTypeControl: true,
+                streetViewControl: false,
+                fullscreenControl: true,
+            });
+            
+            // Load crime data from Firestore
+            loadCrimeData();
+            
+            // Add event listeners for controls
+            document.getElementById('apply-filters').addEventListener('click', function() {
+                timeFilterHours = parseInt(document.getElementById('time-filter').value);
+                loadCrimeData();
+            });
+            
+            document.getElementById('refresh-data').addEventListener('click', refreshData);
+        }
+        
+        // Load crime data from Firestore with time filtering
+        function loadCrimeData() {
+            // Clear existing heatmap data
+            heatmapData = [];
+            
+            // Update status message
+            document.getElementById('status-message').textContent = "Loading crime data...";
+            
+            // Create a query based on the time filter
+            let query = db.collection("crime");
+            
+            // Apply time filter if not "All time"
+            if (timeFilterHours > 0) {
+                const timeThreshold = new Date();
+                timeThreshold.setHours(timeThreshold.getHours() - timeFilterHours);
+                
+                // If you have timestamp field, uncomment this line
+                // query = query.where("timestamp", ">=", timeThreshold);
+            }
+            
+            // Execute the query
+            query.get()
+                .then((querySnapshot) => {
+                    if (querySnapshot.empty) {
+                        console.log(`No crime data found`);
+                        document.getElementById('status-message').textContent = "No crime data found";
+                        // Create empty heatmap to clear previous data
+                        createHeatmap();
+                        return;
+                    }
+                    
+                    // Process each document
+                    querySnapshot.forEach((doc) => {
+                        const data = doc.data();
+                        if (data.latitude && data.longitude) {
+                            // Create a weighted location
+                            const location = new google.maps.LatLng(data.latitude, data.longitude);
+                            
+                            // If you have a severity field, use it for weighting
+                            if (data.severity) {
+                                const weight = parseFloat(data.severity);
+                                heatmapData.push({ location: location, weight: weight });
+                            } else {
+                                heatmapData.push(location);
+                            }
+                        }
+                    });
+                    
+                    // Create or update the heatmap
+                    createHeatmap();
+                    
+                    // Update status message
+                    const statusMessage = timeFilterHours > 0 
+                        ? `Showing ${heatmapData.length} crimes from the last ${timeFilterHours} hours` 
+                        : `Showing all ${heatmapData.length} crime locations`;
+                    document.getElementById('status-message').textContent = statusMessage;
+                    
+                    console.log(`Loaded ${heatmapData.length} crime locations`);
+                })
+                .catch((error) => {
+                    console.error("Error getting crime data: ", error);
+                    document.getElementById('status-message').textContent = "Error loading crime data";
+                });
+        }
+        
+        // Create the heatmap layer
+        function createHeatmap() {
+            // If heatmap already exists, remove it first
+            if (heatmap) {
+                heatmap.setMap(null);
+            }
+            
+            // Create the heatmap with initial settings
+            heatmap = new google.maps.visualization.HeatmapLayer({
+                data: heatmapData,
+                map: map,
+                radius: parseInt(document.getElementById("radius").value),
+                opacity: parseFloat(document.getElementById("opacity").value) / 10,
+            });
+            
+            console.log(`Created heatmap with ${heatmapData.length} crime locations`);
+        }
+        
+        // Update heatmap based on control settings
+        function updateHeatmap() {
+            if (heatmap) {
+                heatmap.set("radius", parseInt(document.getElementById("radius").value));
+                heatmap.set("opacity", parseFloat(document.getElementById("opacity").value) / 10);
+            }
+        }
+        
+        // Refresh data from Firestore
+        function refreshData() {
+            loadCrimeData();
+        }
+        
+        // Initialize everything when the page loads
+        window.onload = initMap;
+    </script>
+</body>
+</html>
